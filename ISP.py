@@ -69,7 +69,7 @@ def read_raw_simple(file_path):
     OB=H_raw.black_level_per_channel[0]
     # white_level=H_raw.camera_white_level_per_channel[0]
     white_level = H_raw.white_level
-    print(f"OB {OB} \n white_level {white_level} \n MAX{raw.max()}")
+    print(f"OB {OB} \nWhite_level {white_level} \nMAX{raw.max()}")
 
     img=bayer_demosaic(raw)
     img[img<OB]=OB
