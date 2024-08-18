@@ -4,6 +4,8 @@
 !*.py
 !*.ipynb
 
-# UnitTest/*
+UnitTest/*
+
+# !UnitTest/*.ipynb
 
 
