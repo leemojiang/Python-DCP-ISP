@@ -15,8 +15,12 @@ def gamma(x,colorspace='sRGB'): #Gamma变换
     y=np. zeros (x. shape)
     y[x>1]=1
     if colorspace in ( 'sRGB', 'srgb'):
-        y[(x>=0)&(x<=0.0031308)]=(323/25*x[ (x>=0)&(x<=0.0031308)])
+        # y[(x>=0)&(x<=0.0031308)]=(323/25*x[ (x>=0)&(x<=0.0031308)])
+        # y[(x<=1)&(x>0.0031308)]=(1.055*abs(x[ (x<=1)&(x>0.0031308)])**(1/2.4)-0.055)
+
+        y[(x>=0)&(x<=0.0031308)]=(12.92*x[ (x>=0)&(x<=0.0031308)])
         y[(x<=1)&(x>0.0031308)]=(1.055*abs(x[ (x<=1)&(x>0.0031308)])**(1/2.4)-0.055)
+
     elif colorspace in ('my'):  
         y[ (x>=0)&(x<=1)]=(1.42*(1-(0.42/(x[(x>=0)&(x<=1)]+0.42))))
     elif colorspace in ('P3'):  
@@ -85,7 +89,7 @@ def bayer_demosaic(raw,bayer='RG'): #朴素的bayer插值算法
         img_gr=raw[0::2,1::2]
         img_gb=raw[1::2,0::2]
         img_b=raw[1::2,1::2]
-    img=np.dstack((img_r,(img_gr+img_gb)/2,img_b))
+    img=np.dstack((img_r,(img_gr+img_gb)/2.0,img_b))
     return img   
 
 def tellme(s):

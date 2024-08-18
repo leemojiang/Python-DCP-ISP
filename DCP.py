@@ -1,7 +1,26 @@
 import numpy as np
 import xml.etree.ElementTree as ET
 import math
+# from lxml import etree as ET
+from xml.dom import minidom
 
+
+def indent(elem, level=0):
+    # print(elem)
+    # https://blog.csdn.net/hiccupfrost/article/details/107594835
+    i = "\n" + level*"\t"
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "\t"
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+        for elem in elem:
+            indent(elem, level+1)
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
 
 def XYZ2xyY(XYZ):
     '''
@@ -140,9 +159,18 @@ class DCPParser:
     def __init__(self, file_path):
         self.file_path = file_path
         self.matrices = {}
+        self.tag_pairs = {}
+        self.luts = {}
 
+        self.tree = ET.parse(self.file_path)
+
+    def modify_tag_pairs(self, pairs = {"Copyright": "Not Adobe"}):
+        for k,v in pairs.items():
+            self.tag_pairs[k] = v
+    
     def parse_matrices(self):
-        tree = ET.parse(self.file_path)
+        # tree = ET.parse(self.file_path)
+        tree =self.tree
         root = tree.getroot()
         for matrix_elem in root.findall('*'):
             if 'Matrix' in matrix_elem.tag:
@@ -157,22 +185,208 @@ class DCPParser:
                     matrix[row][col] = value
                 self.matrices[matrix_name] = matrix
 
-    def save_modified(self, output_file_path,tags_to_exclude=None):
+    def parse_LUTs(self):
+        # LookTable HueSatDeltas2 HueSatDeltas1
+        tree = self.tree
+        root = tree.getroot()
+
+        for lut_elem in root.findall('*'):
+            if 'LookTable' == lut_elem.tag or 'HueSatDeltas' in lut_elem.tag :
+                lut_name = lut_elem.tag
+                
+                hue_div = int(lut_elem.attrib['hueDivisions']) # ex hueDivisions=90 0,89
+                sat_div = int(lut_elem.attrib['satDivisions'])
+                val_div = int(lut_elem.attrib['valDivisions'])
+                tensor = np.zeros((hue_div, sat_div, val_div,3)) #[h index, s index, v index, hsv] hsv hue shift sv scale
+
+                print(f"{lut_name} dim: {tensor.shape} ")
+                
+                for element in lut_elem.findall('Element'):
+                    h = int(element.attrib['HueDiv'])
+                    s = int(element.attrib['SatDiv'])
+                    v = int(element.attrib['ValDiv'])
+
+                    h_ = float(element.attrib['HueShift'])
+                    s_ = float(element.attrib['SatScale'])
+                    v_ = float(element.attrib['ValScale'])   
+
+                    tensor[h,s,v,:] = [h_,s_,v_]
+                
+                self.luts[lut_name] = tensor
+
+
+    def save_modified(self, output_file_path,rename_profileName=None ,tags_to_exclude=[]):
         tree = ET.parse(self.file_path)
         root = tree.getroot()
+
+        for k,v in self.tag_pairs.items():
+            for element in root.findall(k): # root.find
+                previous = element.text
+                element.text = v
+                print(f"Replace \"{k}\" to {v}")
+
+        if rename_profileName is not None:
+            for element in root.findall("ProfileName"): # root.find
+                element.text = rename_profileName
+                print(f"Rename \"ProfileName\" to {rename_profileName}")
+
+        # Rewrite matrix 
+        for matrix_name, matrix in self.matrices.items():
+            if matrix_name in tags_to_exclude:
+                continue
+
+            new_matrix_elem = ET.Element(matrix_name)
+            new_matrix_elem.attrib['Rows'] = str(matrix.shape[0])
+            new_matrix_elem.attrib['Cols'] = str(matrix.shape[1])
+
+            #Reverse order to result in xml
+            for row in reversed(range(matrix.shape[0])):
+                for col in reversed(range(matrix.shape[1])): 
+                    element = ET.Element('Element')
+                    element.attrib['Row'] = str(row)
+                    element.attrib['Col'] = str(col)
+                    element.text = str(matrix[row][col])
+                    new_matrix_elem.append(element)
+
+             # Remove existing matrix elements
+            for elem in root.findall(matrix_name):
+                root.remove(elem)
+            
+            root.append(new_matrix_elem)
+
+        #  # Write Modified Matrix
+        # for matrix_elem in root.findall('*'):
+        #     if matrix_elem.tag in self.matrices: #keys
+        #         matrix = self.matrices[matrix_elem.tag]
+        #         for element in matrix_elem.findall('Element'):
+        #             row = int(element.attrib['Row'])
+        #             col = int(element.attrib['Col'])
+        #             element.text = str(matrix[row][col])
+
+        # Write new LUTs and remove pervious one
+        for lut_name, tensor in self.luts.items():
+            if lut_name in tags_to_exclude:
+                continue
+
+            new_lut_elem = ET.Element(lut_name)
+            new_lut_elem.attrib['hueDivisions'] = str(tensor.shape[0]) # hue_div
+            new_lut_elem.attrib['satDivisions'] = str(tensor.shape[1]) # sat_div
+            new_lut_elem.attrib['valDivisions'] = str(tensor.shape[2]) # val_div
+
+        
+            for h in range(tensor.shape[0]):
+                for s in range(tensor.shape[1]):
+                    for v in range(tensor.shape[2]):
+                        element = ET.Element('Element')
+                        element.attrib['HueDiv'] = str(h)
+                        element.attrib['SatDiv'] = str(s)
+                        element.attrib['ValDiv'] = str(v)
+                        element.attrib['HueShift'] = str(tensor[h, s, v, 0])
+                        element.attrib['SatScale'] = str(tensor[h, s, v, 1])
+                        element.attrib['ValScale'] = str(tensor[h, s, v, 2])
+                        new_lut_elem.append(element)
+                 
+            # Remove existing LUT elements
+            for lut_elem in root.findall('*'):
+                if lut_elem.tag == lut_name:
+                    root.remove(lut_elem)
+            root.append(new_lut_elem)   
 
         for tag in tags_to_exclude:
             elements = root.findall(tag)
             for element in elements:
                 root.remove(element)
+                print(f"Remove {element}")
 
-        for matrix_elem in root.findall('*'):
-            if matrix_elem.tag in self.matrices:
-                matrix = self.matrices[matrix_elem.tag]
-                for element in matrix_elem.findall('Element'):
-                    row = int(element.attrib['Row'])
-                    col = int(element.attrib['Col'])
-                    element.text = str(matrix[row][col])
-
+        indent(root)
         tree.write(output_file_path, encoding='utf-8', xml_declaration=True)
+        # xml_str = minidom.parseString(ET.tostring(root)).toprettyxml()
+        # xml_write = minidom.parseString(ET.tostring(root))
+        # with open(output_file_path, 'w') as fh:
+        #     xml_write.writexml(fh, indent='\t', newl='\n', encoding='utf-8')
 
+import subprocess
+import os
+
+class DCPHandler:
+    # Usage 
+    # file_path = '.\Sony ILCE-7RM2 Adobe Standard.dcp'
+
+    # dcp = DCPHandler(file_path)
+    # dcp.convert2xml()
+    # dcp.parse()
+    # dcp.parser.parse_matrices()
+
+    # dcp.save_modified("./data/ABC.xml",dcp_outpath='./data',rename_profileName="Test Matrix Only",tags_to_exclude=['HueSatDeltas1','HueSatDeltas2','LookTable'])
+
+
+    def __init__(self, file_path , dcpTool="./lib/dcpTool.exe",out_path = "./data"):
+        
+        file_path = os.path.realpath(file_path)
+        dcpTool = os.path.realpath(dcpTool)
+        out_path = os.path.realpath(out_path)
+
+        print(file_path)
+        print(dcpTool)
+        print(out_path)
+
+        self.file_path = file_path
+        self.dcpTool = dcpTool
+
+        # os.path.basename()获取文件名
+        filename = os.path.basename(file_path) 
+        # os.path.splitext()获取文件名和拓展名
+        filename_without_ext, file_extension = os.path.splitext(filename)
+
+        if file_extension == '.xml':
+            self.out_path = file_path
+        else:
+            self.out_path = os.path.join(out_path,filename_without_ext+".xml")
+
+    def convert2xml(self):
+        if self.file_path.endswith('.dcp'):
+            # result = subprocess.run([self.dcpTool, '-d' ,self.file_path,self.out_path ], stdout=subprocess.PIPE)
+            # print(result.stdout.decode())
+            command = f" \"{self.dcpTool}\" -d \"{self.file_path}\" \"{self.out_path}\""
+            print("Execute: ")
+            print(command)
+
+            subprocess.check_output(command, stderr=subprocess.STDOUT,shell=True) 
+            
+            if os.path.isfile(self.out_path):
+                print("Unpack Success") 
+            
+            return
+
+        if self.file_path.endswith('.xml'):
+            print("Xml File loaded,no need unpack")
+        
+
+    def parse(self):
+        self.parser = DCPParser(self.out_path)
+
+    
+    def save_modified(self,xml_file_outpath,dcp_outpath=None,rename_profileName=None,tags_to_exclude=[]):
+
+        xml_file_outpath = os.path.realpath(xml_file_outpath)
+        self.parser.save_modified(xml_file_outpath, rename_profileName= rename_profileName , tags_to_exclude=tags_to_exclude)
+
+         # os.path.basename()获取文件名
+        filename = os.path.basename(xml_file_outpath) 
+        # os.path.splitext()获取文件名和拓展名
+        filename_without_ext, file_extension = os.path.splitext(filename)
+
+        if dcp_outpath is not None:
+            dcp_outpath = os.path.realpath(dcp_outpath)
+            dcp_file_path = os.path.join(dcp_outpath,filename_without_ext+".dcp") 
+            
+            command = f" \"{self.dcpTool}\" -c \"{xml_file_outpath}\" \"{dcp_file_path}\""
+            print("Execute: ")
+            print(command)
+            
+            subprocess.check_output(command, stderr=subprocess.STDOUT,shell=True) 
+
+            if os.path.isfile(dcp_file_path):
+                print("Pack Success") 
+            else:
+                print("Pack failed")
